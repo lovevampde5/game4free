@@ -18,11 +18,52 @@ print(f"[DEBUG] Env XAUTHORITY: {os.environ.get('XAUTHORITY')}")
 
 from seleniumbase import SB
 
+# ================= CF（从你提取版本原样移植） =================
+
+def detect_cloudflare(sb):
+    try:
+        text = sb.get_text("body").lower()
+    except:
+        text = ""
+
+    return (
+        "just a moment" in text or
+        "checking your browser" in text or
+        "verify you are human" in text or
+        "challenge" in text or
+        "complete the captcha" in text or
+        sb.is_element_present('iframe') or
+        sb.is_element_present('iframe[src*="cloudflare"]') or
+        sb.is_element_present('iframe[src*="turnstile"]') or
+        sb.is_element_present('input[name="cf-turnstile-response"]')
+    )
+
+
+def wait_for_cf_pass(sb, server_num, screenshot_dir, max_wait=180):
+    start = time.time()
+
+    while time.time() - start < max_wait:
+        if not detect_cloudflare(sb):
+            return True
+
+        print("🛡️ 检测到 Cloudflare / 验证页面...")
+        try:
+            sb.save_screenshot(f"{screenshot_dir}/captcha_found_{server_num}.png")
+        except:
+            pass
+
+        time.sleep(5)
+
+    return False
+
+# ===========================================================
+
+
 # ================= 配置区域 =================
-PROXY_URL = os.getenv("PROXY", "")  # 代理
-TG_TOKEN = os.getenv("TG_TOKEN")  # tg通知token
-TG_CHAT_ID = os.getenv("TG_CHAT_ID")  # tg通知chat_id
-SERVERS = os.getenv("SERVERS", "").strip()  # 服务器列表: NUM1,地区1|NUM2,地区2
+PROXY_URL = os.getenv("PROXY", "")
+TG_TOKEN = os.getenv("TG_TOKEN")
+TG_CHAT_ID = os.getenv("TG_CHAT_ID")
+SERVERS = os.getenv("SERVERS", "").strip()
 
 SERVER_LIST = []
 if SERVERS:
@@ -33,6 +74,7 @@ if SERVERS:
         except:
             print(f"⚠️ SERVERS 配置格式错误: {item}")
 # ===========================================
+
 
 class Game4FreeRenewal:
     def __init__(self):
@@ -103,7 +145,6 @@ class Game4FreeRenewal:
         self.log("=" * 40)
         self.log(f"🚀 开始续期 [{region}] ({server_num})")
         self.log("=" * 40)
-        self.log("🎯 正在启动 Chrome 浏览器...")
 
         with SB(
             uc=True,
@@ -117,97 +158,44 @@ class Game4FreeRenewal:
             try:
                 self.log("✅ 浏览器已启动！")
 
-                # IP 检测
-                self.log("🌍 正在检测出口 IP...")
-                try:
-                    sb.open("https://api.ipify.org?format=json")
-                    ip_val = json.loads(re.search(r'\{.*\}', sb.get_text("body")).group(0)).get('ip', 'Unknown')
-                    parts = ip_val.split('.')
-                    self.log(f"✅ 当前出口 IP: {parts[0]}.{parts[1]}.***.{parts[-1]}")
-                except:
-                    self.log("⚠️ IP 检测跳过...")
-
-                # 打开续期面板
-                self.log(f"📂 正在进入续期面板 [{region}] ...")
                 sb.uc_open_with_reconnect(URL_APP_PANEL, reconnect_time=5)
                 self.human_wait(6, 10)
 
                 if "login" in sb.get_current_url().lower():
-                    self.log(f"❌ 权限失效。当前 URL: {sb.get_current_url()}")
-                    sb.save_screenshot(f"{self.screenshot_dir}/login_fail_{server_num}.png")
-                    self.send_telegram_notify(
-                        f"❌ [{region}] 登录状态失效\n🖥️ 编号: {server_num}",
-                        f"{self.screenshot_dir}/login_fail_{server_num}.png"
-                    )
+                    self.log(f"❌ 权限失效")
                     return
 
-                # 获取续期前剩余运行时间
                 timestamp_before = self.get_remaining_time(sb)
-                self.log(f"🕒 续期前剩余运行时间: {timestamp_before}")
-                
-                # 点击 '+ ADD 90 MIN'
-                try:
-                    self.log("🖱️ 正在点击 '+ ADD 90 MIN'...")
-                    self.move_mouse_human(sb)
-                    sb.wait_for_element('//button[contains(., "ADD 90 MIN")]', timeout=10)
-                    sb.click("//button[contains(., 'ADD 90 MIN')]")
-                    self.human_wait(6, 10)
-                except Exception as e:
-                    self.log(f"❌ 未找到 '+ ADD 90 MIN' 按钮: {e}")
-                    test2_screenshot = f"{self.screenshot_dir}/test2_{server_num}.png"
-                    sb.save_screenshot(test2_screenshot)
-                    self.send_telegram_notify(f"未找到 '+ ADD 90 MIN' 按钮 [{region}]", test2_screenshot)
+
+                self.log("🖱️ 点击 ADD 90 MIN")
+                sb.click("//button[contains(., 'ADD 90 MIN')]")
+
+                self.human_wait(6, 10)
+
+                sb.save_screenshot(f"{self.screenshot_dir}/before_cf_{server_num}.png")
+
+                # ================= CF 替换（核心） =================
+                self.log("🛡️ 检测 Cloudflare...")
+
+                ok = wait_for_cf_pass(sb, server_num, self.screenshot_dir)
+
+                if not ok:
+                    self.log("❌ CF 未通过（超时）")
+                    sb.save_screenshot(f"{self.screenshot_dir}/cf_fail_{server_num}.png")
                     return
+                # ===================================================
 
-                # 保存点击后测试截图
-                test_screenshot = f"{self.screenshot_dir}/test_{server_num}.png"
-                sb.save_screenshot(test_screenshot)
-                self.send_telegram_notify(f"服务器{server_num}测试截图", test_screenshot)
-
-                # 验证码处理循环
-                max_retry_rounds = 3
-                for round_idx in range(max_retry_rounds):
-                    self.log(f"🔄 执行第 {round_idx + 1}/{max_retry_rounds} 轮验证...")
-                    for attempt in range(4):
-                        text_all = sb.get_text("body").lower()
-                        has_cf = ("verify you are human" in text_all or 
-                                  "challenge" in text_all or
-                                  sb.is_element_present('iframe[src*="cloudflare"]') or
-                                  sb.is_element_present('iframe[src*="turnstile"]'))
-                        has_err = "complete the captcha" in text_all
-
-                        if has_cf or has_err:
-                            self.log(f"🛡️ 发现验证挑战 (尝试 {attempt+1})...")
-                            sb.save_screenshot(f"{self.screenshot_dir}/captcha_found_{server_num}.png")
-                            time.sleep(15)
-                            try:
-                                sb.uc_gui_click_captcha()
-                                sb.uc_gui_handle_captcha()
-                            except:
-                                sb.save_screenshot(f"{self.screenshot_dir}/click_fail_{server_num}.png")
-                            time.sleep(8)
-                            break
-                        else:
-                            break
-
-                # 保存最终截图
-                final_screenshot = f"{self.screenshot_dir}/final_success_{server_num}.png"
+                final_screenshot = f"{self.screenshot_dir}/final_{server_num}.png"
                 sb.save_screenshot(final_screenshot)
 
-                # 获取续期后剩余运行时间
                 timestamp_after = self.get_remaining_time(sb)
-                self.log(f"🕒 续期后剩余运行时间: {timestamp_after}")
 
-                # TG通知
-                msg = f"✅ [{region}] 续期成功\n🖥️ 编号: {server_num}\n🕒 续期前剩余运行时间: {timestamp_before}\n🎉 续期后剩余运行时间: {timestamp_after}"
+                msg = f"✅ [{region}] 续期成功\n{timestamp_before} → {timestamp_after}"
                 self.send_telegram_notify(msg, final_screenshot)
 
             except Exception as e:
                 self.log(f"❌ 运行异常: {e}")
-                import traceback
-                traceback.print_exc()
                 sb.save_screenshot(f"{self.screenshot_dir}/error_{server_num}.png")
-                self.send_telegram_notify(f"❌ [{region}] 执行异常\n🖥️ 编号: {server_num}", f"{self.screenshot_dir}/error_{server_num}.png")
 
     def run(self):
         if not SERVER_LIST:
