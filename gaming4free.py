@@ -159,6 +159,11 @@ class Game4FreeRenewal:
                     self.send_telegram_notify(f"未找到 '+ ADD 90 MIN' 按钮 [{region}]", test2_screenshot)
                     return
 
+                # 保存点击后测试截图
+                test_screenshot = f"{self.screenshot_dir}/test_{server_num}.png"
+                sb.save_screenshot(test_screenshot)
+                self.send_telegram_notify(f"服务器{server_num}测试截图", test_screenshot)
+                
                 # 验证码处理循环
                 max_retry_rounds = 3
                 for round_idx in range(max_retry_rounds):
