@@ -18,7 +18,7 @@ print(f"[DEBUG] Env XAUTHORITY: {os.environ.get('XAUTHORITY')}")
 
 from seleniumbase import SB
 
-# ================= CF（从你提取版本原样移植） =================
+# ================= CF（GitHub 适配：主动点击版） =================
 
 def detect_cloudflare(sb):
     try:
@@ -33,28 +33,61 @@ def detect_cloudflare(sb):
         "challenge" in text or
         "complete the captcha" in text or
         sb.is_element_present('iframe') or
-        sb.is_element_present('iframe[src*="cloudflare"]') or
         sb.is_element_present('iframe[src*="turnstile"]') or
         sb.is_element_present('input[name="cf-turnstile-response"]')
     )
 
 
-def wait_for_cf_pass(sb, server_num, screenshot_dir, max_wait=180):
-    start = time.time()
+def try_click_cf(sb, server_num, screenshot_dir):
+    try:
+        # 1. 滚动 iframe 到可视区域（提高命中率）
+        sb.execute_script("""
+            let frames = document.querySelectorAll('iframe');
+            for (let i = 0; i < frames.length; i++) {
+                frames[i].scrollIntoView({block:'center'});
+            }
+        """)
+        time.sleep(2)
 
-    while time.time() - start < max_wait:
+        # 2. 物理点击 / UC GUI 点击
+        sb.uc_gui_click_captcha()
+        sb.uc_gui_handle_captcha()
+
+    except Exception as e:
+        print(f"[CF CLICK ERROR] {e}")
+        try:
+            sb.save_screenshot(f"{screenshot_dir}/cf_click_fail_{server_num}.png")
+        except:
+            pass
+
+
+def wait_for_cf_pass(sb, server_num, screenshot_dir, max_rounds=3):
+    """
+    GitHub Actions 专用：
+    - 主动检测
+    - 主动点击
+    - retry
+    """
+
+    for round_idx in range(max_rounds):
+        print(f"🛡️ CF round {round_idx + 1}/{max_rounds}")
+
         if not detect_cloudflare(sb):
             return True
 
-        print("🛡️ 检测到 Cloudflare / 验证页面...")
         try:
-            sb.save_screenshot(f"{screenshot_dir}/captcha_found_{server_num}.png")
+            sb.save_screenshot(f"{screenshot_dir}/cf_{server_num}_r{round_idx}.png")
         except:
             pass
 
         time.sleep(5)
 
-    return False
+        # 🔥 核心：主动触发点击（GitHub 适配关键）
+        try_click_cf(sb, server_num, screenshot_dir)
+
+        time.sleep(8)
+
+    return not detect_cloudflare(sb)
 
 # ===========================================================
 
@@ -114,18 +147,13 @@ class Game4FreeRenewal:
                     var el = document.querySelector('div.countdown-time');
                     return el ? el.innerText.trim() : null;
                 """)
-                if remaining_text:
-                    self.log(f"✅ JS获取剩余时间成功: {remaining_text}")
-                else:
-                    remaining_text = "未知"
-            except Exception as js_e:
-                self.log(f"⚠️ JS获取失败: {js_e}")
+            except:
                 remaining_text = "未知"
         return remaining_text
 
     def send_telegram_notify(self, message, photo_path=None):
         if not TG_TOKEN or not TG_CHAT_ID:
-            self.log("⚠️ 未配置 TG_TOKEN 或 TG_CHAT_ID，跳过推送。")
+            self.log("⚠️ 未配置 TG")
             return
         try:
             if photo_path and os.path.exists(photo_path):
@@ -135,9 +163,8 @@ class Game4FreeRenewal:
             else:
                 url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
                 requests.post(url, data={'chat_id': TG_CHAT_ID, 'text': message})
-            self.log("✅ TG 推送已发送")
         except Exception as e:
-            self.log(f"❌ TG 推送失败: {e}")
+            self.log(f"❌ TG失败: {e}")
 
     def run_single_server(self, server_num, region):
         URL_APP_PANEL = f"https://g4f.gg/{server_num}"
@@ -156,16 +183,16 @@ class Game4FreeRenewal:
             proxy=PROXY_URL if PROXY_URL else None
         ) as sb:
             try:
-                self.log("✅ 浏览器已启动！")
+                self.log("✅ 浏览器已启动")
 
                 sb.uc_open_with_reconnect(URL_APP_PANEL, reconnect_time=5)
                 self.human_wait(6, 10)
 
                 if "login" in sb.get_current_url().lower():
-                    self.log(f"❌ 权限失效")
+                    self.log("❌ 登录失效")
                     return
 
-                timestamp_before = self.get_remaining_time(sb)
+                before = self.get_remaining_time(sb)
 
                 self.log("🖱️ 点击 ADD 90 MIN")
                 sb.click("//button[contains(., 'ADD 90 MIN')]")
@@ -174,24 +201,24 @@ class Game4FreeRenewal:
 
                 sb.save_screenshot(f"{self.screenshot_dir}/before_cf_{server_num}.png")
 
-                # ================= CF 替换（核心） =================
-                self.log("🛡️ 检测 Cloudflare...")
+                # ================= CF 替换核心 =================
+                self.log("🛡️ 处理 Cloudflare（GitHub 主动点击模式）...")
 
                 ok = wait_for_cf_pass(sb, server_num, self.screenshot_dir)
 
                 if not ok:
-                    self.log("❌ CF 未通过（超时）")
+                    self.log("❌ CF 未通过")
                     sb.save_screenshot(f"{self.screenshot_dir}/cf_fail_{server_num}.png")
                     return
-                # ===================================================
+                # =================================================
 
-                final_screenshot = f"{self.screenshot_dir}/final_{server_num}.png"
-                sb.save_screenshot(final_screenshot)
+                after = self.get_remaining_time(sb)
 
-                timestamp_after = self.get_remaining_time(sb)
+                final = f"{self.screenshot_dir}/final_{server_num}.png"
+                sb.save_screenshot(final)
 
-                msg = f"✅ [{region}] 续期成功\n{timestamp_before} → {timestamp_after}"
-                self.send_telegram_notify(msg, final_screenshot)
+                msg = f"✅ [{region}] 成功\n{before} → {after}"
+                self.send_telegram_notify(msg, final)
 
             except Exception as e:
                 self.log(f"❌ 运行异常: {e}")
