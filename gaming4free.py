@@ -166,8 +166,8 @@ class Game4FreeRenewal:
 
                 # 验证码处理
                 self.human_wait(6, 10)
-                #sb.uc_gui_click_captcha()
-                sb.uc_gui_handle_captcha()
+                sb.uc_gui_click_captcha()
+                #sb.uc_gui_handle_captcha()
                 self.human_wait(6, 10)
 
                 # 再次点击 'VOTE + ADD 90 MIN'
