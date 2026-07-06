@@ -154,6 +154,26 @@ class Game4FreeRenewal:
                     )
                     return
 
+                cookie_btns = [
+                    '//button[contains(., "Continue with Recommended Cookies")]',
+                    '//button[contains(., "Recommended Cookies")]',
+                    '//button[contains(., "Accept")]',
+                    '//button[contains(., "I Agree")]',
+                    '//button[contains(., "Consent")]',
+                    '//button[contains(., "Got it")]',
+                ]
+
+                for btn in cookie_btns:
+                    if sb.is_element_present(btn):
+                        try:
+                            sb.click(btn)
+                            self.log("🍪 已关闭 Cookie")
+                            break
+                        except:
+                            pass
+
+                self.human_wait(6, 10)
+                
                 # 获取续期前剩余运行时间
                 timestamp_before = self.get_remaining_time(sb)
                 self.log(f"🕒 续期前剩余运行时间: {timestamp_before}")
