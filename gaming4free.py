@@ -178,12 +178,13 @@ class Game4FreeRenewal:
                 timestamp_before = self.get_remaining_time(sb)
                 self.log(f"🕒 续期前剩余运行时间: {timestamp_before}")
 
-                sb.press_keys("body", "PAGEDOWN")
+                sb.execute_script("window.scrollBy(0,1000);")
+
                 # 点击 'VOTE + ADD 90 MIN'
                 try:
                     self.log("🖱️ 正在点击 'VOTE + ADD 90 MIN'...")
                     self.move_mouse_human(sb)
-                    sb.wait_for_element('#sd-vote-btn', timeout=10)
+                    sb.wait_for_element_visible("#sd-vote-btn", timeout=10)
                     sb.click('#sd-vote-btn')
                     self.human_wait(6, 10)
                 except Exception as e:
@@ -217,11 +218,11 @@ class Game4FreeRenewal:
                     return
 
                 # 再次点击 'VOTE + ADD 90 MIN'
-                self.log("🖱️ Cloudflare验证后再次点击 'VOTE + ADD 90 MIN'...")
+                self.log("🖱️ Cloudflare验证后再次点击 'VOTE — ADDS 90 MINUTES'...")
                 try:
                     self.log("🖱️ 正在点击 'VOTE — ADDS 90 MINUTES'...")
                     self.move_mouse_human(sb)
-                    sb.wait_for_element('#vm-submit', timeout=10)
+                    sb.wait_for_element_visible("#vm-submit", timeout=10)
                     sb.click('#vm-submit')
                     self.human_wait(6, 10)
                 except Exception as e:
