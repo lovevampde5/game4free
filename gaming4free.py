@@ -205,7 +205,7 @@ class Game4FreeRenewal:
                 for attempt in range(1, 4):
                     try:
                         sb.uc_gui_click_captcha()
-                        sb.uc_gui_handle_captcha()
+                        #sb.uc_gui_handle_captcha()
                         time.sleep(8)
                     except Exception as e:
                         print(f"⚠️ 点击 Turnstile 出错: {e}")
