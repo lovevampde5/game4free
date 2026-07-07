@@ -1,0 +1,275 @@
+import time
+import os
+import json
+import re
+import random
+import requests
+
+# 智能环境配置
+if "DISPLAY" not in os.environ:
+    os.environ["DISPLAY"] = ":1"
+    
+if "XAUTHORITY" not in os.environ:
+    if os.path.exists("/home/headless/.Xauthority"):
+        os.environ["XAUTHORITY"] = "/home/headless/.Xauthority"
+
+print(f"[DEBUG] Env DISPLAY: {os.environ.get('DISPLAY')}")
+print(f"[DEBUG] Env XAUTHORITY: {os.environ.get('XAUTHORITY')}")
+
+from seleniumbase import SB
+
+# ================= 配置区域 =================
+PROXY_URL = os.getenv("PROXY", "")  # 代理
+TG_TOKEN = os.getenv("TG_TOKEN")  # tg通知token
+TG_CHAT_ID = os.getenv("TG_CHAT_ID")  # tg通知chat_id
+SERVERS = os.getenv("SERVERS", "").strip()  # 服务器列表: NUM1,地区1|NUM2,地区2
+
+SERVER_LIST = []
+if SERVERS:
+    for item in SERVERS.split("|"):
+        try:
+            num, region = item.split(",", 1)
+            SERVER_LIST.append({"num": num.strip(), "region": region.strip()})
+        except:
+            print(f"⚠️ SERVERS 配置格式错误: {item}")
+# ===========================================
+
+class Game4FreeRenewal:
+    def __init__(self):
+        self.BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        self.screenshot_dir = os.path.join(self.BASE_DIR, "artifacts")
+        if not os.path.exists(self.screenshot_dir):
+            os.makedirs(self.screenshot_dir)
+
+    def log(self, msg):
+        timestamp = time.strftime('%H:%M:%S')
+        print(f"[{timestamp}] [INFO] {msg}", flush=True)
+
+    def human_wait(self, min_s=6, max_s=10):
+        time.sleep(random.uniform(min_s, max_s))
+
+    def move_mouse_human(self, sb):
+        try:
+            for _ in range(3):
+                x = random.randint(100, 800)
+                y = random.randint(100, 600)
+                sb.slow_click("body", force=True)
+                time.sleep(random.uniform(0.5, 1.2))
+        except:
+            pass
+
+    def wait_for_turnstile_pass(self, sb, timeout=30):
+        start = time.time()
+        cf_indicators = ["verify you are human", "确认您是真人", "troubleshoot", "just a moment"]
+        while time.time() - start < timeout:
+            page_lower = sb.get_page_source().lower()
+            if not any(x in page_lower for x in cf_indicators):
+                print("✅ Turnstile 验证已通过")
+                return True
+            sb.sleep(1)
+        print("❌ Turnstile 验证超时未通过")
+        return False
+
+    # ========== 改进后的获取剩余时间方法（轮询等待有效值） ==========
+    def get_remaining_time(self, sb, timeout=30, wait_for_valid=True):
+        """
+        获取 #sd-timer 的文本，并等待其变为有效值（非 '-' 且非空）
+        如果 wait_for_valid=True，则轮询直到获取到有效值或超时
+        返回有效时间字符串，或 '未知'
+        """
+        start_time = time.time()
+        last_text = None
+        while time.time() - start_time < timeout:
+            try:
+                # 先检查元素是否存在
+                sb.wait_for_element_present('#sd-timer', timeout=3)
+                # 尝试多种方式获取文本
+                text = None
+                try:
+                    text = sb.get_text('#sd-timer').strip()
+                except:
+                    pass
+                if not text or text == '':
+                    # 尝试 JS 获取
+                    try:
+                        text = sb.execute_script("""
+                            var el = document.querySelector('#sd-timer');
+                            return el ? el.innerText.trim() : null;
+                        """)
+                    except:
+                        pass
+                if text is not None:
+                    last_text = text
+                    if wait_for_valid:
+                        # 如果要求等待有效值，检查是否不是 '-' 且不是空
+                        if text and text != '-':
+                            self.log(f"✅ 获取剩余时间成功: {text}")
+                            return text
+                    else:
+                        # 不等待有效值，直接返回（可能返回 '-'）
+                        self.log(f"✅ 获取剩余时间（可能无效）: {text}")
+                        return text
+            except Exception as e:
+                # 元素未找到，继续等待
+                pass
+            time.sleep(1)  # 每秒轮询一次
+        # 超时后，如果有最后获取到的文本（即使是 '-'），也返回它，否则返回 '未知'
+        if last_text is not None:
+            self.log(f"⚠️ 超时但获取到文本: {last_text}")
+            return last_text
+        self.log("❌ 超时未获取到剩余时间")
+        return "未知"
+    # =============================================================
+
+    def send_telegram_notify(self, message, photo_path=None):
+        if not TG_TOKEN or not TG_CHAT_ID:
+            self.log("⚠️ 未配置 TG_TOKEN 或 TG_CHAT_ID，跳过推送。")
+            return
+        try:
+            if photo_path and os.path.exists(photo_path):
+                url = f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto"
+                with open(photo_path, 'rb') as f:
+                    requests.post(url, data={'chat_id': TG_CHAT_ID, 'caption': message}, files={'photo': f})
+            else:
+                url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+                requests.post(url, data={'chat_id': TG_CHAT_ID, 'text': message})
+            self.log("✅ TG 推送已发送")
+        except Exception as e:
+            self.log(f"❌ TG 推送失败: {e}")
+
+    def run_single_server(self, server_num, region):
+        URL_APP_PANEL = f"https://g4f.gg/{server_num}"
+
+        self.log("=" * 40)
+        self.log(f"🚀 开始续期 [{region}] ({server_num})")
+        self.log("=" * 40)
+        self.log("🎯 正在启动 Chrome 浏览器...")
+
+        with SB(
+            uc=True,
+            test=True,
+            headed=True,
+            headless=False,
+            xvfb=False,
+            chromium_arg="--no-sandbox,--disable-dev-shm-usage,--disable-gpu,--window-position=0,0,--start-maximized",
+            proxy=PROXY_URL if PROXY_URL else None
+        ) as sb:
+            try:
+                self.log("✅ 浏览器已启动！")
+
+                # IP 检测
+                self.log("🌍 正在检测出口 IP...")
+                try:
+                    sb.open("https://api.ipify.org?format=json")
+                    ip_val = json.loads(re.search(r'\{.*\}', sb.get_text("body")).group(0)).get('ip', 'Unknown')
+                    parts = ip_val.split('.')
+                    self.log(f"✅ 当前出口 IP: {parts[0]}.{parts[1]}.***.{parts[-1]}")
+                except:
+                    self.log("⚠️ IP 检测跳过...")
+
+                # 打开续期面板
+                self.log(f"📂 正在进入续期面板 [{region}] ...")
+                sb.uc_open_with_reconnect(URL_APP_PANEL, reconnect_time=5)
+                self.human_wait(6, 10)
+
+                if "login" in sb.get_current_url().lower():
+                    self.log(f"❌ 权限失效。当前 URL: {sb.get_current_url()}")
+                    sb.save_screenshot(f"{self.screenshot_dir}/login_fail_{server_num}.png")
+                    self.send_telegram_notify(
+                        f"❌ [{region}] 登录状态失效\n🖥️ 编号: {server_num}",
+                        f"{self.screenshot_dir}/login_fail_{server_num}.png"
+                    )
+                    return
+
+                # ---------- 获取续期前剩余时间 ----------
+                self.log("⏳ 等待获取续期前剩余时间...")
+                timestamp_before = self.get_remaining_time(sb, timeout=20, wait_for_valid=True)
+                self.log(f"🕒 续期前剩余运行时间: {timestamp_before}")
+                
+                # ---------- 点击 'VOTE + ADD 90 MIN' ----------
+                try:
+                    self.log("🖱️ 正在点击 'VOTE + ADD 90 MIN'...")
+                    self.move_mouse_human(sb)
+                    sb.wait_for_element('#sd-vote-btn', timeout=10)
+                    sb.click('#sd-vote-btn')
+                    self.human_wait(6, 10)
+                except Exception as e:
+                    self.log(f"❌ 未找到 'VOTE + ADD 90 MIN' 按钮: {e}")
+                    test2_screenshot = f"{self.screenshot_dir}/test2_{server_num}.png"
+                    sb.save_screenshot(test2_screenshot)
+                    self.send_telegram_notify(f"未找到 'VOTE + ADD 90 MIN' 按钮 [{region}]", test2_screenshot)
+                    return
+
+                # ---------- 过 Cloudflare 人机 ----------
+                self.log("⏳ 开始验证Cloudflare")
+                turnstile_passed = False
+                for attempt in range(1, 4):
+                    try:
+                        sb.uc_gui_click_captcha()
+                        time.sleep(5)
+                    except Exception as e:
+                        print(f"⚠️ 点击 Turnstile 出错: {e}")
+                    if self.wait_for_turnstile_pass(sb, timeout=20):
+                        turnstile_passed = True
+                        break
+                    else:
+                        print(f"⏳ 第 {attempt} 次未通过，重试点击...")
+                if not turnstile_passed:
+                    print("❌ Turnstile 验证最终未通过，脚本退出")
+                    return
+
+                # ---------- 再次点击 'VOTE — ADDS 90 MINUTES' ----------
+                self.log("🖱️ Cloudflare验证后再次点击 'VOTE — ADDS 90 MINUTES'...")
+                try:
+                    self.log("🖱️ 正在点击 'VOTE — ADDS 90 MINUTES'...")
+                    self.move_mouse_human(sb)
+                    sb.wait_for_element('#vm-submit', timeout=10)
+                    sb.click('#vm-submit')
+                    self.human_wait(6, 10)  # 先等几秒让请求发出
+                except Exception as e:
+                    self.log(f"❌ 未找到 'VOTE — ADDS 90 MINUTES' 按钮: {e}")
+                    test2_screenshot = f"{self.screenshot_dir}/test2_{server_num}.png"
+                    sb.save_screenshot(test2_screenshot)
+                    self.send_telegram_notify(f"未找到 'VOTE — ADDS 90 MINUTES' 按钮 [{region}]", test2_screenshot)
+                    return
+
+                # ---------- 获取续期后剩余时间（等待有效值） ----------
+                self.log("⏳ 等待获取续期后剩余时间...")
+                timestamp_after = self.get_remaining_time(sb, timeout=30, wait_for_valid=True)
+                self.log(f"🕒 续期后剩余运行时间: {timestamp_after}")
+
+                # 保存最终截图
+                final_screenshot = f"{self.screenshot_dir}/final_success_{server_num}.png"
+                sb.save_screenshot(final_screenshot)
+
+                # ---------- 调试：如果时间仍为 '-' 或 '未知'，保存页面源码 ----------
+                if timestamp_before in ("-", "未知") or timestamp_after in ("-", "未知"):
+                    debug_html_path = f"{self.screenshot_dir}/debug_{server_num}.html"
+                    with open(debug_html_path, "w", encoding="utf-8") as f:
+                        f.write(sb.get_page_source())
+                    self.log(f"⚠️ 时间异常，已保存页面源码到 {debug_html_path}")
+
+                # ---------- TG通知 ----------
+                msg = (f"✅ [{region}] 续期成功\n"
+                       f"🖥️ 编号: {server_num}\n"
+                       f"🕒 续期前剩余运行时间: {timestamp_before}\n"
+                       f"🎉 续期后剩余运行时间: {timestamp_after}")
+                self.send_telegram_notify(msg, final_screenshot)
+
+            except Exception as e:
+                self.log(f"❌ 运行异常: {e}")
+                import traceback
+                traceback.print_exc()
+                sb.save_screenshot(f"{self.screenshot_dir}/error_{server_num}.png")
+                self.send_telegram_notify(f"❌ [{region}] 执行异常\n🖥️ 编号: {server_num}", f"{self.screenshot_dir}/error_{server_num}.png")
+
+    def run(self):
+        if not SERVER_LIST:
+            self.log("❌ 未配置 SERVERS")
+            return
+
+        for server in SERVER_LIST:
+            self.run_single_server(server["num"], server["region"])
+
+if __name__ == "__main__":
+    Game4FreeRenewal().run()
